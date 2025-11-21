@@ -111,7 +111,7 @@ summary_df = pd.DataFrame({
 })
 
 st.subheader("Simulation Summary")
-st.dataframe(summary_df.style.hide_index())
+st.dataframe(summary_df.reset_index(drop=True))
 
 # -------------------------------
 # Plots
