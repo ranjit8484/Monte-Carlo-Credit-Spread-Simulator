@@ -1,144 +1,135 @@
+# app.py
 import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import math
 
-st.set_page_config(layout="wide")
-st.title("Credit Spread Monte Carlo Simulator")
+st.set_page_config(page_title="Monte Carlo Credit Spread Simulator", layout="wide")
+st.title("Monte Carlo Credit Spread Simulator (Advanced Rollover Logic)")
 
-# ---------------------------
-# SIDEBAR INPUTS
-# ---------------------------
-st.sidebar.header("Simulation Parameters")
+# ==============================
+# Sidebar Inputs
+# ==============================
+st.sidebar.header("Portfolio Settings")
+initial_collateral = st.sidebar.number_input("Initial Collateral ($)", min_value=1000, value=100000, step=1000)
+risk_percent = st.sidebar.slider("Target Profit % of Credit", min_value=10, max_value=50, value=30, step=5)
+spread_width = st.sidebar.selectbox("Spread Width ($)", [5, 10, 25, 50, 100])
+main_contracts = st.sidebar.selectbox("Main Trade Contracts", [5, 10, 25, 50, 100])
 
-account_size = st.sidebar.number_input("Account Size ($)", value=100000)
-spread_width = st.sidebar.number_input("Spread Width ($)", value=25)
-collateral_per_contract = st.sidebar.number_input("Collateral per Contract ($)", value=2500)
+st.sidebar.header("Main Trade Setup")
+entry_delta = st.sidebar.selectbox("Main Trade Delta", list(range(20, 91)))
 
-starting_contracts = st.sidebar.number_input("Starting Contracts (Main Trade)", value=6)
-main_trade_delta = st.sidebar.selectbox("Main Trade Delta", [50, 40, 35])
+st.sidebar.header("Rollover Settings")
+max_rollovers = st.sidebar.slider("Max Rollovers", 0, 10, 3)
+rollover_delta = st.sidebar.selectbox("Rollover Delta", list(range(20, 91)))
 
-profit_target_percent = 0.5  # 50% of credit for win
-max_loss_percent = st.sidebar.slider("Max Loss (% of collateral)", 0.1, 1.0, 0.5)
+st.sidebar.header("Simulation Settings")
+trades_per_sim = st.sidebar.number_input("Number of Trades per Simulation", min_value=10, value=100, step=10)
+num_simulations = st.sidebar.number_input("Number of Simulations", min_value=10, value=500, step=50)
 
-# Rollovers
-max_rollovers = st.sidebar.selectbox("Max Rollovers on Loss", [1, 2, 3, 4])
-rollover_deltas = st.sidebar.multiselect("Rollover Delta Options", [50, 40, 35], default=[50, 40, 35])
+# ==============================
+# Helper Functions
+# ==============================
+def calc_credit(delta, spread_width, contracts):
+    return (delta / 10) * spread_width * 100 * contracts
 
-num_trades_per_sim = st.sidebar.number_input("Number of Trades per Simulation", value=10)
-num_simulations = st.sidebar.number_input("Number of Simulations", value=500)
+def calc_loss(spread_width, contracts, credit):
+    return spread_width * 100 * contracts - credit
 
-# ---------------------------
-# Probability mapping
-# ---------------------------
-delta_probs_map = {50: 0.5, 40: 0.6, 35: 0.65}
+def simulate_single_trade(collateral, delta, spread_width, contracts, target_profit_percent,
+                          max_rollovers, rollover_delta):
+    """Simulate one trade with potential rollovers using dynamic sizing"""
+    credit = calc_credit(delta, spread_width, contracts)
+    target_profit = target_profit_percent / 100 * credit
+    loss_amount = calc_loss(spread_width, contracts, credit)
 
-profit_per_contract = collateral_per_contract * profit_target_percent
-max_loss_per_contract = collateral_per_contract * max_loss_percent
+    # Determine win/loss
+    prob_win = 100 - delta
+    if np.random.rand() * 100 < prob_win:
+        pnl = target_profit
+        total_trades_used = 1
+    else:
+        # Initial loss
+        pnl = -loss_amount
+        total_trades_used = 1
 
-# ---------------------------
-# MONTE CARLO SIMULATION FUNCTION
-# ---------------------------
-def run_monte_carlo():
-    all_results = []
+        for r in range(max_rollovers):
+            # Determine required contracts to recoup previous loss and make profit
+            credit_roll = calc_credit(rollover_delta, spread_width, 1)
+            contracts_needed = int(np.ceil(abs(pnl) / credit_roll))
+            if contracts_needed == 0:
+                contracts_needed = 1
+            credit_roll_total = calc_credit(rollover_delta, spread_width, contracts_needed)
+            target_profit_roll = target_profit_percent / 100 * credit_roll_total
+            loss_roll = calc_loss(spread_width, contracts_needed, credit_roll_total)
 
-    for sim_id in range(1, num_simulations + 1):
-        account = account_size
-        contracts = starting_contracts
-        rollover_count = 0
+            total_trades_used += 1
 
-        for trade in range(num_trades_per_sim):
-            # Choose delta
-            if trade == 0:
-                delta = main_trade_delta
-            else:
-                delta = np.random.choice(rollover_deltas)
-            win_prob = delta_probs_map.get(delta, 0.5)
-
-            win = np.random.rand() < win_prob
-
-            if win:
-                pnl = contracts * profit_per_contract
-                account += pnl
-                outcome = 'Win'
-                contracts = starting_contracts
-                rollover_count = 0
-            else:
-                pnl = -contracts * max_loss_per_contract
-                account += pnl
-                outcome = 'Loss'
-                rollover_count += 1
-                if rollover_count <= max_rollovers:
-                    contracts *= 2
-                else:
-                    contracts = starting_contracts
-                    rollover_count = 0
-
-            all_results.append({
-                'Simulation': sim_id,
-                'Trade': trade+1,
-                'Contracts': contracts,
-                'Delta': delta,
-                'Outcome': outcome,
-                'P&L': pnl,
-                'Account': account,
-                'Rollover Count': rollover_count
-            })
-
-            if account <= 0:
+            if np.random.rand() * 100 < (100 - rollover_delta):
+                # Win on rollover
+                pnl = -pnl + target_profit_roll  # recoup previous loss + new profit
                 break
+            else:
+                # Loss on rollover, accumulate
+                pnl = pnl - loss_roll
 
-    return pd.DataFrame(all_results)
+    final_collateral = collateral + pnl
+    return final_collateral, total_trades_used
 
-# ---------------------------
-# RUN SIMULATION
-# ---------------------------
-df_results = run_monte_carlo()
+# ==============================
+# Run Monte Carlo Simulation
+# ==============================
+all_final_accounts = []
+all_trade_counts = []
 
-# ---------------------------
-# DASHBOARD METRICS
-# ---------------------------
+for sim in range(num_simulations):
+    collateral = initial_collateral
+    trades_count = []
+    for t in range(trades_per_sim):
+        collateral, trades_used = simulate_single_trade(collateral, entry_delta, spread_width, main_contracts,
+                                                        risk_percent, max_rollovers, rollover_delta)
+        trades_count.append(trades_used)
+    all_final_accounts.append(collateral)
+    all_trade_counts.append(trades_count)
+
+# ==============================
+# Dashboard Metrics
+# ==============================
 st.subheader("Simulation Dashboard")
-total_simulations = df_results['Simulation'].nunique()
-final_accounts = df_results.groupby('Simulation')['Account'].last()
-avg_final_account = final_accounts.mean()
-max_final_account = final_accounts.max()
-min_final_account = final_accounts.min()
-drawdowns = df_results.groupby('Simulation')['Account'].agg(lambda x: x.max() - x.min())
-avg_drawdown = drawdowns.mean()
-max_drawdown = drawdowns.max()
-prob_profit = (final_accounts > account_size).mean() * 100  # in %
-
 col1, col2, col3, col4, col5, col6 = st.columns(6)
-col1.metric("Total Simulations", total_simulations)
-col2.metric("Avg Final Account", f"${avg_final_account:,.0f}")
-col3.metric("Max Final Account", f"${max_final_account:,.0f}")
-col4.metric("Min Final Account", f"${min_final_account:,.0f}")
-col5.metric("Avg Drawdown", f"${avg_drawdown:,.0f}")
-col6.metric("Prob. of Profit", f"{prob_profit:.1f}%")
+col1.metric("Simulations", num_simulations)
+col2.metric("Trades per Simulation", trades_per_sim)
+col3.metric("Initial Collateral ($)", f"{initial_collateral:,.0f}")
+col4.metric("Median Final Account ($)", f"{np.median(all_final_accounts):,.0f}")
+col5.metric("Best Case ($)", f"{np.max(all_final_accounts):,.0f}")
+col6.metric("Worst Case ($)", f"{np.min(all_final_accounts):,.0f}")
 
-# ---------------------------
-# EQUITY CURVES
-# ---------------------------
-st.subheader("Sample Equity Curves")
-sample_sims = df_results['Simulation'].unique()[:5]
-fig = px.line(df_results[df_results['Simulation'].isin(sample_sims)],
-              x='Trade', y='Account', color='Simulation',
-              markers=True, title="Equity Curves for Sample Simulations")
-st.plotly_chart(fig, use_container_width=True)
+# ==============================
+# Histogram of Final Accounts
+# ==============================
+st.subheader("Histogram of Final Account Values")
+hist_fig = px.histogram(all_final_accounts, nbins=50,
+                        labels={'value': 'Final Account Value ($)'},
+                        title='Distribution of Ending Account Values')
+st.plotly_chart(hist_fig, use_container_width=True)
 
-# ---------------------------
-# HISTOGRAM OF FINAL ACCOUNT VALUES
-# ---------------------------
-st.subheader("Distribution of Final Account Values")
-fig_hist = px.histogram(final_accounts, nbins=20,
-                        title="Histogram of Final Account Values",
-                        labels={'value':'Final Account'})
-st.plotly_chart(fig_hist, use_container_width=True)
+# ==============================
+# Sample Trade Trajectories
+# ==============================
+st.subheader("Sample Trade Trajectories (First 50 Simulations)")
+sample_trades = np.array(all_trade_counts[:50])
+cum_trades = np.cumsum(sample_trades, axis=1)
+trade_fig = px.line(cum_trades.T, labels={'index': 'Trade Number', 'value': 'Cumulative Trades'},
+                    title='Cumulative Trade Counts per Simulation')
+st.plotly_chart(trade_fig, use_container_width=True)
 
-# ---------------------------
-# SUMMARY TABLE
-# ---------------------------
-st.subheader("Simulation Results (first 20 rows)")
-st.dataframe(df_results.head(20))
+# ==============================
+# Simulation Summary Table
+# ==============================
+st.subheader("Simulation Summary Table")
+summary_df = pd.DataFrame({
+    'Simulation': range(1, num_simulations + 1),
+    'Final Account ($)': all_final_accounts,
+    'Max Trades Used': [max(tc) for tc in all_trade_counts]
+})
+st.dataframe(summary_df.sort_values(by='Final Account ($)', ascending=False))
