@@ -177,4 +177,5 @@ st.pyplot(fig3)
 
 # ---------------- Summary Table ----------------
 st.header("Simulation Summary Table")
-st.dataframe(summary_df.style.hide_index())
+st.dataframe(summary_df.reset_index(drop=True))
+
