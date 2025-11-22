@@ -205,7 +205,7 @@ st.markdown("---")
 st.write("Win rates are counts of main trades (before) and trades that ended up profitable (after rollovers).")
 col7, col8 = st.columns(2)
 col7.metric("Win Rate (Before Rollovers)", f"{(summary_df['Wins Before Roll'].sum() / (num_simulations * num_trades) * 100) if (num_simulations * num_trades) > 0 else 0:.2f}%")
-col8.metric("Win Rate (After Rollovers)", f"{(summary_df['WinsAfter Roll'].sum() / (num_simulations * num_trades) * 100) if (num_simulations * num_trades) > 0 else 0:.2f}%")
+col8.metric("Win Rate (After Rollovers)", f"{(summary_df['Wins After Roll'].sum() / (num_simulations * num_trades) * 100) if (num_simulations * num_trades) > 0 else 0:.2f}%")
 
 # ---------------- Plots ----------------
 st.header("Simulation Plots")
