@@ -150,7 +150,16 @@ for sim in range(int(num_simulations)):
                     account, rollover_needed, spread_width, rollover_delta, max_loss_per_trade, max_contracts_allowed
                 )
                 account_history.append(account)
-                rollover_needed = max(0, rollover_needed - r_pl)  # update remaining amount to recover
+                # Properly reduce rollover_needed only by profits
+if r_pl >= rollover_needed:
+    rollover_needed = 0
+else:
+    rollover_needed -= r_pl
+
+# Stop if previous loss has been recovered
+if rollover_needed <= 0:
+    break
+
                 if r_win:
                     wins_after += 1
 
