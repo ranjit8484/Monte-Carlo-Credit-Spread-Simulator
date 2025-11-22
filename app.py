@@ -141,7 +141,7 @@ for sim in range(int(num_simulations)):
                 "Credit": trade_credit,
                 "Account": account
             })
-            # Rollovers
+           # Rollovers
             while rollovers_done < max_rollovers and rollover_needed > 0 and account > 0:
                 rollovers_done += 1
                 total_rollovers += 1
@@ -150,15 +150,30 @@ for sim in range(int(num_simulations)):
                     account, rollover_needed, spread_width, rollover_delta, max_loss_per_trade, max_contracts_allowed
                 )
                 account_history.append(account)
-                # Properly reduce rollover_needed only by profits
-                if r_pl >= rollover_needed:
-                    rollover_needed = 0
-                else:
-                    rollover_needed -= r_pl
                 
-                # Stop if previous loss has been recovered
-                if rollover_needed <= 0:
+                # Update remaining amount to recover
+                rollover_needed = max(0, rollover_needed - r_pl) if not r_win else 0
+                
+                if r_win:
+                    wins_after += 1
+            
+                all_trade_records.append({
+                    "Simulation": sim + 1,
+                    "Trade #": rollover_id,
+                    "Rollover": True,
+                    "Win": r_win,
+                    "Trade P/L": r_pl,
+                    "# of Rollovers Done": rollovers_done,
+                    "Quantity": r_qty,
+                    "Collateral": r_collateral,
+                    "Credit": r_credit,
+                    "Account": account
+                })
+                
+                # Stop rollovers if a rollover wins
+                if r_win:
                     break
+
 
                 if r_win:
                     wins_after += 1
