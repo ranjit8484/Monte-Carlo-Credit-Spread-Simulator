@@ -36,7 +36,7 @@ def simulate_trade(account, delta, spread, target_loss, main_qty):
     max_qty_exposure_limit = int((account * 0.5) / collateral_per_contract)
     trade_qty = min(main_qty, max_qty_loss_limit, max_qty_exposure_limit)
     if trade_qty < 1:
-        return account, 0, 0, 0, False, 0, 0  # cannot trade
+        return account, 0, 0, 0, False, 0, 0, 0  # cannot trade
 
     total_collateral = collateral_per_contract * trade_qty
     total_credit = credit_per_contract * trade_qty
