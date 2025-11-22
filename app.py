@@ -151,14 +151,14 @@ for sim in range(int(num_simulations)):
                 )
                 account_history.append(account)
                 # Properly reduce rollover_needed only by profits
-if r_pl >= rollover_needed:
-    rollover_needed = 0
-else:
-    rollover_needed -= r_pl
-
-# Stop if previous loss has been recovered
-if rollover_needed <= 0:
-    break
+                if r_pl >= rollover_needed:
+                    rollover_needed = 0
+                else:
+                    rollover_needed -= r_pl
+                
+                # Stop if previous loss has been recovered
+                if rollover_needed <= 0:
+                    break
 
                 if r_win:
                     wins_after += 1
