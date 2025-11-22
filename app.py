@@ -260,6 +260,40 @@ st.plotly_chart(fig_traj, use_container_width=True)
 
 # ---------------- Trade Table ----------------
 st.header("Trade-by-Trade Simulation Table")
-selected_sim = st.number_input("Select Simulation Number", min_value=1, max_value=int(num_simulations), value=1, step=1)
+selected_sim = st.number_input(
+    "Select Simulation Number", 
+    min_value=1, max_value=int(num_simulations), value=1, step=1
+)
+
 sim_trade_df = trade_df[trade_df["Simulation"] == selected_sim].reset_index(drop=True)
-st.dataframe(sim_trade_df)
+
+# Reorder and rename columns
+sim_trade_df = sim_trade_df[[
+    "Simulation", 
+    "Trade #", 
+    "Rollover", 
+    "Win", 
+    "Rollovers Done", 
+    "Quantity", 
+    "Collateral", 
+    "Profit",  # rename this column
+    "Account"
+]]
+sim_trade_df = sim_trade_df.rename(columns={
+    "Profit": "Trade P/L",
+    "Rollovers Done": "# of Rollovers Done"
+})
+
+# Highlight wins and losses
+def highlight_pl(val):
+    if val > 0:
+        color = 'background-color: #d0f0c0'  # pastel green
+    elif val < 0:
+        color = 'background-color: #f4cccc'  # pastel red
+    else:
+        color = ''
+    return color
+
+styled_df = sim_trade_df.style.applymap(highlight_pl, subset=["Trade P/L"])
+
+st.dataframe(styled_df, use_container_width=True)
