@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 import math
@@ -10,6 +11,7 @@ st.title("Monte Carlo Credit Spread Simulator")
 
 # ---------------- Sidebar Inputs ----------------
 st.sidebar.header("Simulation Inputs")
+
 initial_account = st.sidebar.number_input("Initial Account ($)", value=100_000, step=1000, format="%d")
 spread_width = st.sidebar.number_input("Spread Width ($)", value=10, step=1)
 main_delta = st.sidebar.slider("Main Trade Delta (%)", min_value=20, max_value=90, value=50)
@@ -26,19 +28,17 @@ seed_val = st.sidebar.number_input("Random Seed", value=42, step=1)
 
 # ---------------- Helper Functions ----------------
 def calc_max_loss(delta, spread):
-    """Maximum loss per contract based on delta and spread"""
+    """Calculate maximum loss per contract based on delta and spread"""
     return spread * 100 * (1 - delta / 100.0)
 
-def simulate_trade(account, delta, qty, spread, max_loss_allowed):
+def simulate_trade(account, delta, qty, spread, target_profit, max_loss_allowed):
     """Simulate a single credit spread trade"""
     collateral_per_contract = spread * 100
     credit_per_contract = spread * (delta / 100.0) * 100.0
     max_loss_contract = calc_max_loss(delta, spread)
-
     # Adjust quantity to not exceed max loss per trade
     max_qty_allowed = int(max_loss_allowed / max_loss_contract)
     qty = min(qty, max_qty_allowed) if max_qty_allowed > 0 else 1
-
     total_collateral = collateral_per_contract * qty
     total_credit = credit_per_contract * qty
 
@@ -47,42 +47,39 @@ def simulate_trade(account, delta, qty, spread, max_loss_allowed):
 
     if win:
         trade_pl = total_credit
-        loss = 0.0
         rollover_needed = 0.0
     else:
         trade_pl = - (total_collateral - total_credit)
-        loss = total_collateral - total_credit
-        rollover_needed = loss
+        rollover_needed = -trade_pl  # amount to recover
 
-    return account + trade_pl, trade_pl, loss, rollover_needed, win, total_collateral, total_credit, qty
+    return account + trade_pl, trade_pl, rollover_needed, win, total_collateral, total_credit, qty
 
 def simulate_rollover(account, debit_to_cover, spread, delta, max_loss_allowed, max_contracts_allowed):
-    """Simulate a rollover trade to recover previous loss"""
+    """Simulate a rollover trade to cover previous losses"""
     collateral_per_contract = spread * 100
     credit_per_contract = spread * (delta / 100.0) * 100.0
     max_loss_contract = calc_max_loss(delta, spread)
 
-    # Determine qty needed to cover remaining loss
+    # Determine qty needed to cover previous loss
     needed_qty = int(np.ceil(debit_to_cover / credit_per_contract))
     qty = min(needed_qty, max_contracts_allowed)
 
-    # Respect max loss per trade
+    # Adjust to respect max loss per trade
     max_qty_allowed = int(max_loss_allowed / max_loss_contract)
     qty = min(qty, max_qty_allowed) if max_qty_allowed > 0 else 1
 
     total_collateral = collateral_per_contract * qty
     total_credit = credit_per_contract * qty
+
     prob_success = delta / 100.0
     win = np.random.rand() < prob_success
 
     if win:
         trade_pl = total_credit
-        loss = 0.0
     else:
         trade_pl = - (total_collateral - total_credit)
-        loss = total_collateral - total_credit
 
-    return account + trade_pl, trade_pl, loss, win, qty, total_collateral, total_credit
+    return account + trade_pl, trade_pl, win, qty, total_collateral, total_credit
 
 # ---------------- Main Simulation ----------------
 all_sim_results = []
@@ -108,34 +105,58 @@ for sim in range(int(num_simulations)):
         if max_contracts_allowed < 1:
             break
 
-        account, trade_pl, loss, rollover_needed, win, trade_collateral, trade_credit, trade_qty = simulate_trade(
-            account, main_delta, main_qty, spread_width, max_loss_per_trade
+        account, trade_pl, rollover_needed, win, trade_collateral, trade_credit, trade_qty = simulate_trade(
+            account, main_delta, main_qty, spread_width, target_profit, max_loss_per_trade
         )
+
         account_history.append(account)
-        rollovers_done = 0
         if win:
             wins_before += 1
             wins_after += 1
+            rollovers_done = 0
+            all_trade_records.append({
+                "Simulation": sim + 1,
+                "Trade #": trade_idx + 1,
+                "Rollover": False,
+                "Win": win,
+                "Trade P/L": trade_pl,
+                "# of Rollovers Done": rollovers_done,
+                "Quantity": trade_qty,
+                "Collateral": trade_collateral,
+                "Credit": trade_credit,
+                "Account": account
+            })
         else:
-            # Rollovers to recover loss
-            remaining_loss = rollover_needed
-            rollover_count = 0
-            while rollover_count < max_rollovers and remaining_loss > 0 and account > 0:
-                rollover_count += 1
+            rollovers_done = 0
+            main_trade_id = trade_idx + 1
+            all_trade_records.append({
+                "Simulation": sim + 1,
+                "Trade #": main_trade_id,
+                "Rollover": False,
+                "Win": win,
+                "Trade P/L": trade_pl,
+                "# of Rollovers Done": rollovers_done,
+                "Quantity": trade_qty,
+                "Collateral": trade_collateral,
+                "Credit": trade_credit,
+                "Account": account
+            })
+            # Rollovers
+            while rollovers_done < max_rollovers and rollover_needed > 0 and account > 0:
+                rollovers_done += 1
                 total_rollovers += 1
-                account, r_pl, r_loss, r_win, r_qty, r_collateral, r_credit = simulate_rollover(
-                    account, remaining_loss, spread_width, rollover_delta, max_loss_per_trade, max_contracts_allowed
+                rollover_id = f"{main_trade_id}.{rollovers_done}"
+                account, r_pl, r_win, r_qty, r_collateral, r_credit = simulate_rollover(
+                    account, rollover_needed, spread_width, rollover_delta, max_loss_per_trade, max_contracts_allowed
                 )
                 account_history.append(account)
-                rollovers_done += 1
-                remaining_loss = max(0, remaining_loss - r_pl)
+                rollover_needed = max(0, rollover_needed - r_pl)  # update remaining amount to recover
                 if r_win:
                     wins_after += 1
-                    break
-                # record rollover as sub-trade
+
                 all_trade_records.append({
                     "Simulation": sim + 1,
-                    "Trade #": f"{trade_idx + 1}.{rollover_count}",
+                    "Trade #": rollover_id,
                     "Rollover": True,
                     "Win": r_win,
                     "Trade P/L": r_pl,
@@ -150,20 +171,6 @@ for sim in range(int(num_simulations)):
         peak = max(account_history)
         current_dd = peak - account
         max_drawdown = max(max_drawdown, current_dd)
-
-        # record main trade
-        all_trade_records.append({
-            "Simulation": sim + 1,
-            "Trade #": trade_idx + 1,
-            "Rollover": False,
-            "Win": win,
-            "Trade P/L": trade_pl,
-            "# of Rollovers Done": rollovers_done,
-            "Quantity": trade_qty,
-            "Collateral": trade_collateral,
-            "Credit": trade_credit,
-            "Account": account
-        })
 
     final_account = account
     all_sim_results.append({
@@ -198,16 +205,21 @@ st.markdown("---")
 st.write("Win rates are counts of main trades (before) and trades that ended up profitable (after rollovers).")
 col7, col8 = st.columns(2)
 col7.metric("Win Rate (Before Rollovers)", f"{(summary_df['Wins Before Roll'].sum() / (num_simulations * num_trades) * 100) if (num_simulations * num_trades) > 0 else 0:.2f}%")
-col8.metric("Win Rate (After Rollovers)", f"{(summary_df['Wins After Roll'].sum() / (num_simulations * num_trades) * 100) if (num_simulations * num_trades) > 0 else 0:.2f}%")
+col8.metric("Win Rate (After Rollovers)", f"{(summary_df['WinsAfter Roll'].sum() / (num_simulations * num_trades) * 100) if (num_simulations * num_trades) > 0 else 0:.2f}%")
 
 # ---------------- Plots ----------------
 st.header("Simulation Plots")
+
+# Histogram of final accounts
+st.subheader("Histogram of Final Accounts")
 fig_hist = px.histogram(summary_df, x="Final Account", nbins=40, template="plotly_white",
                         title="Distribution of Final Account Values")
 fig_hist.update_layout(margin=dict(t=40, b=20, l=20, r=20))
 fig_hist.add_vline(x=initial_account, line_dash="dash", line_color="black", annotation_text="Start account", annotation_position="top left")
 st.plotly_chart(fig_hist, use_container_width=True)
 
+# Mean trajectory with 10th-90th percentile band
+st.subheader("Mean Account Trajectory with 10th-90th Percentile Band")
 max_len = max(len(h) for h in all_histories) if all_histories else 0
 hist_array = np.array([h + [h[-1]] * (max_len - len(h)) for h in all_histories])
 mean_traj = np.mean(hist_array, axis=0)
@@ -237,14 +249,27 @@ st.header("Trade-by-Trade Simulation Table")
 selected_sim = st.number_input("Select Simulation Number", min_value=1, max_value=int(num_simulations), value=1, step=1)
 sim_trade_df = trade_df[trade_df["Simulation"] == selected_sim].reset_index(drop=True)
 
+# Reorder columns
+sim_trade_df = sim_trade_df[[  
+    "Simulation",
+    "Trade #",
+    "Rollover",
+    "Win",
+    "Trade P/L",
+    "# of Rollovers Done",
+    "Quantity",
+    "Collateral",
+    "Credit",
+    "Account"
+]]
+
 # Highlight wins/losses
 def highlight_win_loss(row):
-    color = []
-    for val, win in zip(row, row['Win'] if 'Win' in row else [True]):
-        if row['Trade P/L'] < 0:
-            color.append('background-color: #ffcccc')  # light red
-        else:
-            color.append('background-color: #ccffcc')  # light green
-    return color
+    if row['Trade P/L'] < 0:
+        return ['background-color: rgba(255, 182, 193, 0.3)'] * len(row)  # pastel red
+    elif row['Trade P/L'] > 0:
+        return ['background-color: rgba(144, 238, 144, 0.3)'] * len(row)  # pastel green
+    else:
+        return [''] * len(row)
 
-st.dataframe(sim_trade_df)
+st.dataframe(sim_trade_df.style.apply(highlight_win_loss, axis=1))
