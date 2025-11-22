@@ -1,7 +1,7 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 import math
@@ -16,27 +16,36 @@ initial_account = st.sidebar.number_input("Initial Account ($)", value=100_000, 
 spread_width = st.sidebar.number_input("Spread Width ($)", value=10, step=1)
 main_delta = st.sidebar.slider("Main Trade Delta (%)", min_value=20, max_value=90, value=50)
 main_qty = st.sidebar.slider("Main Trade Quantity", min_value=1, max_value=100, value=5)
-target_profit_trade = st.sidebar.slider("Profit per Trade ($)", min_value=100, max_value=700, value=200, step=50)
-max_rollovers = st.sidebar.slider("Max Rollovers per Trade", min_value=1, max_value=5, value=3)
+max_loss_per_trade = st.sidebar.slider("Max Loss per Trade ($)", min_value=100, max_value=700, value=200, step=50)
+max_rollovers = st.sidebar.slider("Max Rollovers per Trade", min_value=0, max_value=10, value=3)
 rollover_delta = st.sidebar.slider("Rollover Delta (%)", min_value=20, max_value=90, value=40)
 num_trades = st.sidebar.number_input("Number of Trades per Simulation", min_value=10, max_value=1000, value=50, step=10)
-num_simulations = st.sidebar.number_input("Number of Simulations", min_value=1, max_value=1000, value=100, step=10)
+num_simulations = st.sidebar.number_input("Number of Simulations", min_value=1, max_value=1000, value=5, step=1)
 fixed_seed = st.sidebar.checkbox("Use Random Seed", value=True)
 seed_val = st.sidebar.number_input("Random Seed", value=42)
 
 # ---------------- Helper Functions ----------------
-def simulate_trade(account, delta, qty, spread, target_profit):
+def simulate_trade(account, delta, spread, target_loss, main_qty):
+    """Simulate one credit spread trade with max loss per trade and exposure limit"""
     collateral_per_contract = spread * 100
-    total_collateral = collateral_per_contract * qty
     credit_per_contract = spread * (delta / 100) * 100
-    total_credit = credit_per_contract * qty
+    loss_per_contract = collateral_per_contract - credit_per_contract
 
-    # Delta → Probability mapping
-    prob_success = 1 - (delta / 100)
+    # Compute max qty allowed for this trade
+    max_qty_loss_limit = int(target_loss / loss_per_contract)
+    max_qty_exposure_limit = int((account * 0.5) / collateral_per_contract)
+    trade_qty = min(main_qty, max_qty_loss_limit, max_qty_exposure_limit)
+    if trade_qty < 1:
+        return account, 0, 0, 0, False, 0, 0  # cannot trade
+
+    total_collateral = collateral_per_contract * trade_qty
+    total_credit = credit_per_contract * trade_qty
+
+    prob_success = 1 - delta / 100  # winning probability is 1 - delta
     win = np.random.rand() < prob_success
 
     if win:
-        realized_profit = min(total_credit, target_profit)
+        realized_profit = total_credit
         account += realized_profit
         loss = 0
         rollover_needed = 0
@@ -46,26 +55,28 @@ def simulate_trade(account, delta, qty, spread, target_profit):
         rollover_needed = loss
         realized_profit = 0
 
-    return account, realized_profit, loss, rollover_needed, win, total_collateral, total_credit
+    return account, realized_profit, loss, rollover_needed, win, total_collateral, total_credit, trade_qty
 
-def simulate_rollover(account, debit_to_cover, spread, delta, max_contracts_allowed, target_profit):
+def simulate_rollover(account, debit_to_cover, spread, delta, max_rollovers, target_loss):
+    """Simulate a rollover trade to cover previous loss"""
     collateral_per_contract = spread * 100
     credit_per_contract = spread * (delta / 100) * 100
-    # Determine quantity to cover previous loss
-    if credit_per_contract <= 0:
-        qty = max_contracts_allowed
-    else:
-        qty = min(int(math.ceil(debit_to_cover / credit_per_contract)), max_contracts_allowed)
-        qty = max(1, qty)
+    loss_per_contract = collateral_per_contract - credit_per_contract
 
-    total_collateral = qty * collateral_per_contract
-    total_credit = qty * credit_per_contract
+    max_qty_loss_limit = int(target_loss / loss_per_contract)
+    max_qty_exposure_limit = int((account * 0.5) / collateral_per_contract)
+    needed_qty = int(np.ceil(debit_to_cover / credit_per_contract))
+    trade_qty = min(max_qty_loss_limit, max_qty_exposure_limit, needed_qty)
+    if trade_qty < 1:
+        return account, 0, debit_to_cover, False, 0, 0, 0
 
-    prob_success = 1 - (delta / 100)
+    total_collateral = trade_qty * collateral_per_contract
+    total_credit = trade_qty * credit_per_contract
+    prob_success = 1 - delta / 100
     win = np.random.rand() < prob_success
 
     if win:
-        realized_profit = min(total_credit, target_profit)
+        realized_profit = total_credit
         account += realized_profit
         loss = 0
     else:
@@ -73,7 +84,7 @@ def simulate_rollover(account, debit_to_cover, spread, delta, max_contracts_allo
         account -= loss
         realized_profit = 0
 
-    return account, realized_profit, loss, win, qty, total_collateral, total_credit
+    return account, realized_profit, loss, win, trade_qty, total_collateral, total_credit
 
 # ---------------- Main Simulation ----------------
 all_sim_results = []
@@ -83,7 +94,7 @@ if fixed_seed:
     np.random.seed(seed_val)
 
 for sim in range(num_simulations):
-    account = float(initial_account)
+    account = initial_account
     account_history = [account]
     total_rollovers = 0
     total_trades = 0
@@ -94,12 +105,8 @@ for sim in range(num_simulations):
 
     for trade_idx in range(num_trades):
         total_trades += 1
-        max_contracts_allowed = int((account * 0.5) // (spread_width * 100))  # Max 50% of account
-        if max_contracts_allowed < 1:
-            break
-
-        account, realized_profit, loss, rollover_needed, win, trade_collateral, trade_credit = simulate_trade(
-            account, main_delta, main_qty, spread_width, target_profit_trade
+        account, profit, loss, rollover_needed, win, trade_collateral, trade_credit, trade_qty = simulate_trade(
+            account, main_delta, spread_width, max_loss_per_trade, main_qty
         )
         account_history.append(account)
         if win:
@@ -110,8 +117,8 @@ for sim in range(num_simulations):
             while rollovers_done < max_rollovers and rollover_needed > 0 and account > 0:
                 rollovers_done += 1
                 total_rollovers += 1
-                account, r_profit, r_loss, r_win, qty_used, r_collateral, r_credit = simulate_rollover(
-                    account, rollover_needed, spread_width, rollover_delta, max_contracts_allowed, target_profit_trade
+                account, r_profit, r_loss, r_win, r_qty, r_collateral, r_credit = simulate_rollover(
+                    account, rollover_needed, spread_width, rollover_delta, max_rollovers, max_loss_per_trade
                 )
                 account_history.append(account)
                 rollover_needed = r_loss
@@ -119,10 +126,10 @@ for sim in range(num_simulations):
                     wins_after += 1
                     break
 
-        max_contracts_used = max(max_contracts_used, main_qty + total_rollovers)
-        # Drawdown
+        max_contracts_used = max(max_contracts_used, trade_qty + total_rollovers)
         peak = max(account_history)
         max_drawdown = max(max_drawdown, peak - account)
+
         if account <= 0:
             break
 
@@ -130,7 +137,7 @@ for sim in range(num_simulations):
         "Simulation": sim + 1,
         "Final Account": account,
         "Total Rollovers": total_rollovers,
-        "Avg Rollovers per Trade": (total_rollovers / num_trades) if num_trades > 0 else 0.0,
+        "Avg Rollovers per Trade": total_rollovers / num_trades,
         "Max Contracts Used": max_contracts_used,
         "Total Trades": total_trades,
         "Wins Before Roll": wins_before,
@@ -154,6 +161,7 @@ col5.metric("Avg Total Rollovers per Simulation", f"{summary_df['Total Rollovers
 col6.metric("Avg Max Drawdown ($)", f"{summary_df['Max Drawdown'].mean():,.0f}")
 
 st.markdown("---")
+st.write("Win rates are counts of main trades (before) and trades that ended up profitable (after rollovers).")
 col7, col8 = st.columns(2)
 col7.metric("Win Rate (Before Rollovers)", f"{(summary_df['Wins Before Roll'].sum() / (num_simulations * num_trades) * 100) if (num_simulations * num_trades)>0 else 0:.2f}%")
 col8.metric("Win Rate (After Rollovers)", f"{(summary_df['Wins After Roll'].sum() / (num_simulations * num_trades) * 100) if (num_simulations * num_trades)>0 else 0:.2f}%")
@@ -161,7 +169,7 @@ col8.metric("Win Rate (After Rollovers)", f"{(summary_df['Wins After Roll'].sum(
 # ---------------- Plots ----------------
 st.header("Simulation Plots")
 
-# 1) Histogram of final accounts
+# Histogram of final accounts
 st.subheader("Histogram of Final Accounts")
 fig_hist = px.histogram(summary_df, x="Final Account", nbins=40, template="plotly_white",
                         title="Distribution of Final Account Values")
@@ -169,38 +177,35 @@ fig_hist.update_layout(margin=dict(t=40, b=20, l=20, r=20))
 fig_hist.add_vline(x=initial_account, line_dash="dash", line_color="black", annotation_text="Start account", annotation_position="top left")
 st.plotly_chart(fig_hist, use_container_width=True)
 
-# 2) Mean trajectory + percentile band
-st.subheader("Mean Account Trajectory with 10-90th Percentile Band")
-if all_histories:
-    max_len = max(len(h) for h in all_histories)
-    hist_array = np.array([h + [h[-1]]*(max_len-len(h)) for h in all_histories])
-    mean_traj = np.mean(hist_array, axis=0)
-    p10 = np.percentile(hist_array, 10, axis=0)
-    p90 = np.percentile(hist_array, 90, axis=0)
-    x_axis = list(range(max_len))
+# Mean trajectory with 10th-90th percentile band
+st.subheader("Mean account trajectory with 10th-90th percentile band")
+max_len = max(len(h) for h in all_histories) if all_histories else 0
+hist_array = np.array([h + [h[-1]] * (max_len - len(h)) for h in all_histories])
+mean_traj = np.mean(hist_array, axis=0)
+p10 = np.percentile(hist_array, 10, axis=0)
+p90 = np.percentile(hist_array, 90, axis=0)
+x_axis = list(range(0, max_len))
+fig_traj = go.Figure()
+fig_traj.add_trace(go.Scatter(
+    x=x_axis + x_axis[::-1],
+    y=list(p90) + list(p10[::-1]),
+    fill='toself',
+    fillcolor='rgba(173,216,230,0.3)',
+    line=dict(color='rgba(255,255,255,0)'),
+    hoverinfo="skip",
+    showlegend=True,
+    name='10-90 percentile'
+))
+fig_traj.add_trace(go.Scatter(x=x_axis, y=mean_traj, mode='lines', name='Mean trajectory',
+                              line=dict(color='royalblue', width=3)))
+fig_traj.update_layout(template="plotly_white", xaxis_title="Event index (trade + rollovers points)", yaxis_title="Account Value ($)",
+                       margin=dict(t=40, b=20, l=20, r=20), legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
+st.plotly_chart(fig_traj, use_container_width=True)
 
-    fig_traj = go.Figure()
-    fig_traj.add_trace(go.Scatter(
-        x=x_axis + x_axis[::-1],
-        y=list(p90) + list(p10[::-1]),
-        fill='toself',
-        fillcolor='rgba(173,216,230,0.3)',
-        line=dict(color='rgba(255,255,255,0)'),
-        hoverinfo="skip",
-        name='10-90 percentile'
-    ))
-    fig_traj.add_trace(go.Scatter(x=x_axis, y=mean_traj, mode='lines', name='Mean trajectory',
-                                  line=dict(color='royalblue', width=3)))
-    fig_traj.update_layout(template="plotly_white",
-                           xaxis_title="Event index (trade + rollover points)",
-                           yaxis_title="Account Value ($)",
-                           margin=dict(t=40, b=20, l=20, r=20))
-    st.plotly_chart(fig_traj, use_container_width=True)
-
-# 3) Histogram of total rollovers per simulation
+# Histogram of total rollovers per simulation
 st.subheader("Histogram of Total Rollovers per Simulation")
 fig_roll = px.histogram(summary_df, x="Total Rollovers", nbins=30, template="plotly_white",
-                        title="Total Rollovers per Simulation")
+                        title="Total rollovers per simulation")
 fig_roll.update_layout(margin=dict(t=40, b=20, l=20, r=20))
 st.plotly_chart(fig_roll, use_container_width=True)
 
